@@ -16,12 +16,11 @@ def process_bcf_sales_data(uploaded_file):
         return None, None
 
     try:
-        # Load the uploaded file's content into a pandas DataFrame.
+        # Load the uploaded file's content into a pandas DataFrame from the first sheet only.
         # The 'uploaded_file' from Streamlit is a file-like object.
         # Explicitly setting engine to 'openpyxl' makes the dependency clear.
-        # Note: The 'openpyxl' library must be installed in your environment.
-        # Run: pip install openpyxl
-        df = pd.read_excel(uploaded_file, engine='openpyxl')
+        # sheet_name=0 ensures only the first sheet is ever read.
+        df = pd.read_excel(uploaded_file, engine='openpyxl', sheet_name=0)
 
         # --- Data Processing and Transformation ---
         # Set the second row as the header
