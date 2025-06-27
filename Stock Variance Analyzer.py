@@ -58,6 +58,38 @@ def map_stock_targets(df, target_dict):
     df['Stock Target'] = df['Product Code'].map(target_dict).fillna(0).astype(int)
     return df
 
+def analyze_stock_balance(df, stock_column_name: str):
+    """
+    Calculates stock balance and splits the DataFrame into overstocked and understocked items.
+    """
+    try:
+        if df is None:
+             return None, None, None
+
+        df_analyzed = df.copy()
+        # Ensure required columns exist
+        required_columns = [stock_column_name, 'Stock Target']
+        if not all(col in df.columns for col in required_columns):
+            missing_col = next((col for col in required_columns if col not in df.columns), "a required column")
+            # This is a non-critical warning for the UI
+            return df, pd.DataFrame(), pd.DataFrame()
+
+        # Sanitize the stock column to ensure it's numeric for calculation
+        df_analyzed[stock_column_name] = pd.to_numeric(df_analyzed[stock_column_name], errors='coerce').fillna(0)
+        # Balance = Current Stock - Target Stock
+        df_analyzed['Balance'] = df_analyzed[stock_column_name] - df_analyzed['Stock Target']
+
+        # Overstocked: current stock > target stock (Balance > 0)
+        overstocked_df = df_analyzed[df_analyzed['Balance'] > 0].copy()
+        # Understocked: current stock < target stock (Balance < 0)
+        understocked_df = df_analyzed[df_analyzed['Balance'] < 0].copy()
+
+        return df_analyzed, overstocked_df, understocked_df
+
+    except Exception as e:
+        st.error(f"An error occurred during detailed balance analysis: {e}")
+        return None, None, None
+
 def create_production_priority_list(local_df, export_df):
     """
     Merges local and export data to create a single, prioritized production list.
@@ -82,34 +114,24 @@ def create_production_priority_list(local_df, export_df):
             how='outer'
         )
 
-        # Fill NaN values with 0 for products that don't exist in both markets
+        # Fill NaN values with 0 and convert types
         merged_df = merged_df.fillna(0)
-        
-        # Convert stock columns to integers
         for col in ['Local Stock', 'Local Target', 'Export Stock', 'Export Target']:
             merged_df[col] = merged_df[col].astype(int)
-
 
         # Calculate consolidated metrics
         merged_df['Total Current Stock'] = merged_df['Local Stock'] + merged_df['Export Stock']
         merged_df['Total Production Required'] = merged_df['Local Target'] + merged_df['Export Target']
-        merged_df['Production Difference'] = merged_df['Total Production Required'] - merged_df['Total Current Stock']
+        merged_df['Production Shortfall'] = merged_df['Total Production Required'] - merged_df['Total Current Stock']
 
         # Filter out products where no production is needed
-        production_list = merged_df[merged_df['Production Difference'] > 0].copy()
+        production_list = merged_df[merged_df['Production Shortfall'] > 0].copy()
+        production_list.sort_values(by='Production Shortfall', ascending=False, inplace=True)
 
-        # Sort by the difference to prioritize the most needed products
-        production_list.sort_values(by='Production Difference', ascending=False, inplace=True)
-
-        # Select and reorder columns for the final display
         final_columns = [
-            'Production Difference',
-            'Product Code',
-            'Product Name',
-            'Total Production Required',
-            'Total Current Stock',
-            'Local Target',
-            'Export Target'
+            'Production Shortfall', 'Product Code', 'Product Name',
+            'Total Production Required', 'Total Current Stock',
+            'Local Target', 'Export Target'
         ]
         return production_list[final_columns]
 
@@ -125,19 +147,16 @@ st.set_page_config(layout="wide", page_title="BCF Production Priority Analyzer")
 st.title("🏭 BCF Production Priority Analyzer")
 st.markdown("A consolidated tool to identify and prioritize production based on total market demand versus total stock.")
 
-# --- Session State Initialization for storing targets ---
+# --- Session State Initialization ---
 if 'local_targets' not in st.session_state:
     st.session_state.local_targets = {10101: 5000, 10102: 7500, 10105: 4000, 10201: 10000, 99999: 1000}
-
 if 'export_targets' not in st.session_state:
     st.session_state.export_targets = {10101: 25000, 10102: 40000, 10305: 60000, 20201: 55000}
-
 
 # --- UI Sections ---
 st.header("1. Upload Sales Data")
 uploaded_file = st.file_uploader("Choose your BCF.xlsx file", type="xlsx")
 
-# --- Section for Data Entry ---
 st.header("2. Add or Update Stock Targets (Forecasts)")
 with st.form("target_form"):
     st.write("Use this form to add a new product forecast or update an existing one.")
@@ -149,8 +168,7 @@ with st.form("target_form"):
     with col3:
         stock_target = st.number_input("New Target/Forecast", step=1, format="%d", min_value=0)
 
-    submitted = st.form_submit_button("Update Target")
-    if submitted:
+    if st.form_submit_button("Update Target"):
         if product_code > 0:
             if target_type == "Local":
                 st.session_state.local_targets[product_code] = stock_target
@@ -161,21 +179,15 @@ with st.form("target_form"):
         else:
             st.error("Please enter a valid Product Code.")
 
-# --- Expander for viewing current targets ---
 with st.expander("View Current Stock Targets"):
-    col1_exp, col2_exp = st.columns(2)
-    with col1_exp:
-        st.subheader("Local Sales Targets")
-        st.json(st.session_state.local_targets)
-    with col2_exp:
-        st.subheader("Export Sales Targets")
-        st.json(st.session_state.export_targets)
+    c1, c2 = st.columns(2)
+    c1.subheader("Local Sales Targets")
+    c1.json(st.session_state.local_targets)
+    c2.subheader("Export Sales Targets")
+    c2.json(st.session_state.export_targets)
 
 
 if uploaded_file is not None:
-    st.header("3. Production Priority List")
-    st.markdown("This table shows the total units of each product that need to be produced, sorted by the most urgent need first.")
-    
     local_sales_df, export_sales_df = process_bcf_sales_data(uploaded_file)
 
     if local_sales_df is not None and export_sales_df is not None:
@@ -183,13 +195,52 @@ if uploaded_file is not None:
         local_sales_df = map_stock_targets(local_sales_df, st.session_state.local_targets)
         export_sales_df = map_stock_targets(export_sales_df, st.session_state.export_targets)
 
-        # Create the consolidated production list
+        # --- 3. Display Production Priority List ---
+        st.header("3. Consolidated Production Priority List")
+        st.markdown("This table shows the total units needed for each product, sorted by the most urgent requirement first.")
         production_priority_df = create_production_priority_list(local_sales_df, export_sales_df)
-
         if not production_priority_df.empty:
             st.dataframe(production_priority_df)
         else:
             st.success("✅ No production shortfall found. All stock levels meet or exceed the total required targets.")
 
+        # --- 4. Display Detailed Market Analysis ---
+        st.header("4. Detailed Market Analysis")
+        col1_res, col2_res = st.columns(2)
+
+        # Analyze and display local market details
+        with col1_res:
+            st.subheader("Local Sales Breakdown")
+            _, local_overstocked, local_understocked = analyze_stock_balance(local_sales_df, 'Total')
+            
+            st.markdown("###### Overstocked Local Products (Stock > Target)")
+            if not local_overstocked.empty:
+                st.dataframe(local_overstocked[['Product Code', 'Product Name', 'Total', 'Stock Target', 'Balance']])
+            else:
+                st.info("No overstocked local products.")
+
+            st.markdown("###### Understocked Local Products (Stock < Target)")
+            if not local_understocked.empty:
+                st.dataframe(local_understocked[['Product Code', 'Product Name', 'Total', 'Stock Target', 'Balance']])
+            else:
+                st.info("No understocked local products.")
+
+        # Analyze and display export market details
+        with col2_res:
+            st.subheader("Export Sales Breakdown")
+            _, export_overstocked, export_understocked = analyze_stock_balance(export_sales_df, 'Quantity')
+            
+            st.markdown("###### Overstocked Export Products (Stock > Target)")
+            if not export_overstocked.empty:
+                st.dataframe(export_overstocked[['Product Code', 'Product Name', 'Quantity', 'Stock Target', 'Balance']])
+            else:
+                st.info("No overstocked export products.")
+
+            st.markdown("###### Understocked Export Products (Stock < Target)")
+            if not export_understocked.empty:
+                st.dataframe(export_understocked[['Product Code', 'Product Name', 'Quantity', 'Stock Target', 'Balance']])
+            else:
+                st.info("No understocked export products.")
+
 else:
-    st.info("Awaiting BCF.xlsx file to be uploaded to view the production priority list.")
+    st.info("Awaiting BCF.xlsx file to be uploaded to view the analysis.")
