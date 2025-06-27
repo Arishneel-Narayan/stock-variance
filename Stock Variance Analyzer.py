@@ -18,7 +18,10 @@ def process_bcf_sales_data(uploaded_file):
     try:
         # Load the uploaded file's content into a pandas DataFrame.
         # The 'uploaded_file' from Streamlit is a file-like object.
-        df = pd.read_excel(uploaded_file)
+        # Explicitly setting engine to 'openpyxl' makes the dependency clear.
+        # Note: The 'openpyxl' library must be installed in your environment.
+        # Run: pip install openpyxl
+        df = pd.read_excel(uploaded_file, engine='openpyxl')
 
         # --- Data Processing and Transformation ---
         # Set the second row as the header
@@ -185,4 +188,3 @@ if uploaded_file is not None:
                 st.success("✅ All export product stock levels are at or above target.")
 else:
     st.info("Awaiting for BCF.xlsx file to be uploaded.")
-
